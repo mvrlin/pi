@@ -8,7 +8,8 @@
   "packages": [
     "git:github.com/otahontas/pi-coding-agent-catppuccin",
     "npm:@latentminds/pi-quotas",
-    "npm:pi-bash-live-view"
+    "npm:pi-bash-live-view",
+    "npm:pi-web-access"
   ],
   "theme": "catppuccin-mocha",
   "hideThinkingBlock": false,
