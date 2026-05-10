@@ -7,6 +7,7 @@
   "quietStartup": true,
   "packages": [
     "git:github.com/otahontas/pi-coding-agent-catppuccin",
+    "npm:@latentminds/pi-quotas",
     "npm:pi-bash-live-view"
   ],
   "theme": "catppuccin-mocha",
