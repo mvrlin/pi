@@ -1,0 +1,12 @@
+# Ignore everything by default; explicitly allow shared Pi agent config below.
+*
+
+!.gitignore
+!settings.json
+!keybindings.json
+!extensions/
+!extensions/**
+!skills/
+!skills/**
+!themes/
+!themes/**

@@ -1,0 +1,18 @@
+{
+  "defaultModel": "gpt-5.5",
+  "defaultProvider": "openai-codex",
+  "defaultThinkingLevel": "minimal",
+  "enableInstallTelemetry": false,
+  "lastChangelogVersion": "0.74.0",
+  "quietStartup": true,
+  "packages": [
+    "git:github.com/otahontas/pi-coding-agent-catppuccin",
+    "npm:pi-bash-live-view"
+  ],
+  "theme": "catppuccin-mocha",
+  "hideThinkingBlock": false,
+  "favoriteModels": [
+    "openai-codex/gpt-5.5",
+    "openrouter/minimax/minimax-m2.7"
+  ]
+}
