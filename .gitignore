@@ -2,6 +2,7 @@
 *
 
 !.gitignore
+!.vscode
 !settings.json
 !keybindings.json
 !extensions/
