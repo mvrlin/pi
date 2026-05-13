@@ -1,229 +1,269 @@
-/**
- * Model favorites for the native Pi model selector
- *
- * Adds favorites support to the built-in /model picker (Ctrl+L).
- * Favorite models are shown first in the sorted model list and are marked with ★.
- *
- * Usage:
- * 1. Open the native model selector with /model or Ctrl+L
- * 2. Move to a model and press Ctrl+Shift+F (or Alt+F as a fallback) to toggle it as favorite
- * 3. Favorites are persisted in ~/.pi/agent/settings.json under "favoriteModels"
- * 4. You can also edit the setting manually, using either "provider/model-id" or "model-id"
- *
- * Example settings.json:
- * {
- *   "favoriteModels": [
- *     "openai/gpt-5.1-codex-max",
- *     "claude-sonnet-4.5"
- *   ]
- * }
- */
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { Model } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-import { getAgentDir, ModelSelectorComponent, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { matchesKey, Spacer, Text } from "@earendil-works/pi-tui";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+const SETTINGS_PATH = path.join(os.homedir(), ".pi", "agent", "settings.json");
+const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+type Level = (typeof LEVELS)[number];
 
-const SETTINGS_PATH = join(getAgentDir(), "settings.json");
-const FAVORITES_FIELD = "favoriteModels";
-const TOGGLE_KEYS = ["ctrl+shift+f", "alt+f"];
-const YELLOW = "\x1b[33m";
-const RESET = "\x1b[0m";
+type Settings = {
+  favoriteModels?: string[];
+  defaultProvider?: string;
+  defaultModel?: string;
+};
 
-let isPatched = false;
-
-type Model = {
-  id: string;
-  name?: string;
+type Favorite = {
+  key: string;
   provider: string;
+  modelId: string;
+  thinkingLevel: Level;
 };
 
-type ModelItem = {
-  id: string;
-  model: Model;
-  provider: string;
-};
-
-type SettingsWithFavorites = Record<string, unknown> & {
-  favoriteModels?: unknown;
-};
-
-function readSettings(): SettingsWithFavorites {
-  if (!existsSync(SETTINGS_PATH)) return {};
-  const raw = readFileSync(SETTINGS_PATH, "utf8");
-  return raw.trim() ? (JSON.parse(raw) as SettingsWithFavorites) : {};
+function readJson(file: string): Settings {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return {};
+  }
 }
 
-function writeSettings(settings: SettingsWithFavorites): void {
-  mkdirSync(dirname(SETTINGS_PATH), { recursive: true });
-  writeFileSync(SETTINGS_PATH, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+function writeGlobalSettings(settings: Settings) {
+  fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true });
+  fs.writeFileSync(SETTINGS_PATH, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
 }
 
-function getFavorites(): string[] {
-  const settings = readSettings();
-  return Array.isArray(settings[FAVORITES_FIELD])
-    ? settings[FAVORITES_FIELD].filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-    : [];
+function favoritePrefix(key: string): string | undefined {
+  const colon = key.lastIndexOf(":");
+  const modelPart = colon === -1 ? key : key.slice(0, colon);
+  return modelPart.includes("/") ? modelPart : undefined;
 }
 
-function setFavorites(favorites: string[]): void {
+function parseFavorite(key: string): Favorite | undefined {
+  const colon = key.lastIndexOf(":");
+  const modelPart = colon === -1 ? key : key.slice(0, colon);
+  const level = colon === -1 ? "off" : key.slice(colon + 1);
+  if (!modelPart.includes("/") || !LEVELS.includes(level as Level)) return undefined;
+  const slash = modelPart.indexOf("/");
+  return {
+    key,
+    provider: modelPart.slice(0, slash),
+    modelId: modelPart.slice(slash + 1),
+    thinkingLevel: level as Level,
+  };
+}
+
+function normalizeFavorites(favorites: string[] | undefined): string[] {
+  const result: string[] = [];
   const seen = new Set<string>();
-  const normalized = favorites.filter((favorite) => {
-    if (seen.has(favorite)) return false;
-    seen.add(favorite);
-    return true;
-  });
-  const settings = readSettings();
-  settings[FAVORITES_FIELD] = normalized;
-  writeSettings(settings);
+  for (const favorite of favorites ?? []) {
+    const prefix = favoritePrefix(favorite);
+    if (!prefix) {
+      result.push(favorite);
+      continue;
+    }
+    if (seen.has(prefix)) continue;
+    seen.add(prefix);
+    result.push(favorite);
+  }
+  return result;
 }
 
-function modelKey(model: Model): string {
+function getProjectSettings(cwd: string): Settings {
+  return readJson(path.join(cwd, ".pi", "settings.json"));
+}
+
+function getMergedFavorites(cwd: string): string[] {
+  const global = normalizeFavorites(readJson(SETTINGS_PATH).favoriteModels);
+  const project = normalizeFavorites(getProjectSettings(cwd).favoriteModels);
+  return normalizeFavorites([...global, ...project]);
+}
+
+function modelKey(model: Model<any>) {
   return `${model.provider}/${model.id}`;
 }
 
-function favoriteIndex(model: Model, favorites = getFavorites()): number {
-  const key = modelKey(model);
-  return favorites.findIndex((favorite) => favorite === key || favorite === model.id);
+function findGlobalFavorite(provider: string, modelId: string): string | undefined {
+  const prefix = `${provider}/${modelId}`;
+  return normalizeFavorites(readJson(SETTINGS_PATH).favoriteModels).find((fav) => fav === prefix || fav.startsWith(`${prefix}:`));
 }
 
-function isFavorite(model: Model, favorites = getFavorites()): boolean {
-  return favoriteIndex(model, favorites) >= 0;
+function setDefaultModel(provider: string, modelId: string) {
+  const settings = readJson(SETTINGS_PATH);
+  settings.defaultProvider = provider;
+  settings.defaultModel = modelId;
+  writeGlobalSettings(settings);
 }
 
-function toggleFavorite(model: Model): boolean {
-  const key = modelKey(model);
-  const favorites = getFavorites();
-  const index = favoriteIndex(model, favorites);
-  if (index >= 0) {
-    favorites.splice(index, 1);
-    setFavorites(favorites);
-    return false;
+async function validFavorites(ctx: ExtensionContext): Promise<Array<Favorite & { model: Model<any> }>> {
+  const result: Array<Favorite & { model: Model<any> }> = [];
+  for (const key of getMergedFavorites(ctx.cwd)) {
+    const fav = parseFavorite(key);
+    if (!fav) continue;
+    const model = ctx.modelRegistry.find(fav.provider, fav.modelId);
+    if (!model) continue;
+    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+    if (!auth.ok) continue;
+    result.push({ ...fav, model });
   }
-  favorites.push(key);
-  setFavorites(favorites);
+  return result;
+}
+
+async function cycleFavorite(pi: ExtensionAPI, ctx: ExtensionContext, direction: "forward" | "backward") {
+  const favorites = await validFavorites(ctx);
+  if (favorites.length === 0) {
+    ctx.ui.notify("No favorite models with configured API keys. Use /favorite-model add.", "warning");
+    return;
+  }
+
+  const current = ctx.model ? modelKey(ctx.model) : undefined;
+  let currentIndex = favorites.findIndex((fav) => `${fav.provider}/${fav.modelId}` === current);
+  if (currentIndex === -1) currentIndex = direction === "forward" ? -1 : 0;
+
+  const nextIndex =
+    direction === "forward"
+      ? (currentIndex + 1 + favorites.length) % favorites.length
+      : (currentIndex - 1 + favorites.length) % favorites.length;
+  const next = favorites[nextIndex];
+
+  const ok = await pi.setModel(next.model);
+  if (!ok) {
+    ctx.ui.notify(`No API key for ${next.provider}/${next.modelId}`, "warning");
+    return;
+  }
+  pi.setThinkingLevel(next.thinkingLevel as ThinkingLevel);
+  setDefaultModel(next.provider, next.modelId);
+
+}
+
+function addFavorite(provider: string, modelId: string, level: string): boolean {
+  if (!LEVELS.includes(level as Level)) return false;
+  const settings = readJson(SETTINGS_PATH);
+  const favorites = normalizeFavorites(settings.favoriteModels);
+  const prefix = `${provider}/${modelId}`;
+  settings.favoriteModels = [...favorites.filter((fav) => favoritePrefix(fav) !== prefix), `${prefix}:${level}`];
+  writeGlobalSettings(settings);
   return true;
 }
 
-function modelsAreEqual(a: Model | undefined, b: Model | undefined): boolean {
-  return Boolean(a && b && a.provider === b.provider && a.id === b.id);
+function removeFavorite(provider: string, modelId: string) {
+  const settings = readJson(SETTINGS_PATH);
+  const prefix = `${provider}/${modelId}`;
+  settings.favoriteModels = normalizeFavorites(settings.favoriteModels).filter((fav) => favoritePrefix(fav) !== prefix);
+  writeGlobalSettings(settings);
 }
 
-function isToggleFavoriteKey(data: string): boolean {
-  return TOGGLE_KEYS.some((key) => matchesKey(data, key));
-}
+export default function favoriteModelExtension(pi: ExtensionAPI) {
+  let unsubscribeMacOptionKeys: (() => void) | undefined;
 
-async function patchNativeModelSelector() {
-  if (isPatched) return;
-  isPatched = true;
+  pi.registerShortcut("ctrl+shift+l", {
+    description: "Cycle favorite models forward",
+    handler: (ctx) => cycleFavorite(pi, ctx, "forward"),
+  });
 
-  const piMainUrl = await import.meta.resolve("@earendil-works/pi-coding-agent");
-  const themeModule = await import(new URL("./modes/interactive/theme/theme.js", piMainUrl).href);
-  const theme = themeModule.theme;
-  const proto = ModelSelectorComponent.prototype;
+  pi.registerShortcut("ctrl+shift+k", {
+    description: "Cycle favorite models backward",
+    handler: (ctx) => cycleFavorite(pi, ctx, "backward"),
+  });
 
-  proto.sortModels = function sortModelsWithFavorites(models: ModelItem[]) {
-    const favorites = getFavorites();
-    const sorted = [...models];
-    sorted.sort((a, b) => {
-      const aFavorite = favoriteIndex(a.model, favorites);
-      const bFavorite = favoriteIndex(b.model, favorites);
-      if (aFavorite >= 0 || bFavorite >= 0) {
-        if (aFavorite >= 0 && bFavorite >= 0) return aFavorite - bFavorite;
-        return aFavorite >= 0 ? -1 : 1;
+  // macOS Terminal/iTerm often sends Option+P as the unicode chars π / ∏
+  // unless "Option as Meta" is enabled. Handle those directly too.
+  pi.on("session_start", (_event, ctx) => {
+    unsubscribeMacOptionKeys?.();
+    unsubscribeMacOptionKeys = ctx.ui.onTerminalInput((data) => {
+      if (data === "π") {
+        void cycleFavorite(pi, ctx, "forward");
+        return { consume: true };
       }
-
-      // Preserve Pi's native ordering for non-favorites: current model first, then provider.
-      const aIsCurrent = modelsAreEqual(this.currentModel, a.model);
-      const bIsCurrent = modelsAreEqual(this.currentModel, b.model);
-      if (aIsCurrent && !bIsCurrent) return -1;
-      if (!aIsCurrent && bIsCurrent) return 1;
-      return a.provider.localeCompare(b.provider);
+      if (data === "∏") {
+        void cycleFavorite(pi, ctx, "backward");
+        return { consume: true };
+      }
+      return undefined;
     });
-    return sorted;
-  };
+  });
 
-  const originalLoadModels = proto.loadModels;
-  proto.loadModels = async function loadModelsWithFavoriteScopedOrdering(...args: unknown[]) {
-    await originalLoadModels.apply(this, args);
-    this.scopedModelItems = this.sortModels(this.scopedModelItems ?? []);
-    this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
-    this.filteredModels = this.activeModels;
-    const currentIndex = this.filteredModels.findIndex((item: ModelItem) => modelsAreEqual(this.currentModel, item.model));
-    this.selectedIndex = currentIndex >= 0 ? currentIndex : Math.min(this.selectedIndex, Math.max(0, this.filteredModels.length - 1));
-  };
+  pi.on("session_shutdown", () => {
+    unsubscribeMacOptionKeys?.();
+    unsubscribeMacOptionKeys = undefined;
+  });
 
-  const originalHandleInput = proto.handleInput;
-  proto.handleInput = function handleInputWithFavoriteToggle(keyData: string) {
-    if (isToggleFavoriteKey(keyData)) {
-      const selected = this.filteredModels?.[this.selectedIndex];
-      if (!selected) return;
-      toggleFavorite(selected.model);
-      this.allModels = this.sortModels(this.allModels ?? []);
-      this.scopedModelItems = this.sortModels(this.scopedModelItems ?? []);
-      this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
-      this.filterModels(this.searchInput.getValue());
-      this.tui.requestRender();
-      return;
-    }
-    return originalHandleInput.call(this, keyData);
-  };
+  pi.registerCommand("fm", {
+    description: "Favorite model shortcut: next | prev | select | list | add | remove | toggle",
+    handler: async (args, ctx) => {
+      pi.sendUserMessage(`/favorite-model ${args || "select"}`, { deliverAs: ctx.isIdle() ? undefined : "followUp" });
+    },
+  });
 
-  proto.getScopeHintText = function getScopeHintTextWithFavorite() {
-    return "Tab scope · Ctrl+Shift+F/Alt+F favorite";
-  };
+  pi.registerCommand("favorite-model", {
+    description: "Manage favorite models: list | add [provider/model[:level]] | remove [provider/model] | toggle",
+    handler: async (args, ctx) => {
+      const [action = "list", rawKey] = args.trim().split(/\s+/, 2);
+      const current = ctx.model;
 
-  proto.updateList = function updateListWithFavoriteMarkers() {
-    this.listContainer.clear();
-    const maxVisible = 10;
-    const startIndex = Math.max(
-      0,
-      Math.min(this.selectedIndex - Math.floor(maxVisible / 2), this.filteredModels.length - maxVisible),
-    );
-    const endIndex = Math.min(startIndex + maxVisible, this.filteredModels.length);
-    const favorites = getFavorites();
-
-    for (let i = startIndex; i < endIndex; i++) {
-      const item = this.filteredModels[i];
-      if (!item) continue;
-      const isSelected = i === this.selectedIndex;
-      const isCurrent = modelsAreEqual(this.currentModel, item.model);
-      const favoriteMark = isFavorite(item.model, favorites) ? `${YELLOW}★${RESET} ` : "  ";
-      const providerBadge = theme.fg("muted", `[${item.provider}]`);
-      const checkmark = isCurrent ? ` ${theme.fg("success", "✓")}` : "";
-
-      if (isSelected) {
-        const prefix = theme.fg("accent", "→ ");
-        const modelText = theme.fg("accent", item.id);
-        this.listContainer.addChild(new Text(`${prefix}${favoriteMark}${modelText} ${providerBadge}${checkmark}`, 0, 0));
-      } else {
-        this.listContainer.addChild(new Text(`  ${favoriteMark}${item.id} ${providerBadge}${checkmark}`, 0, 0));
+      if (action === "next") {
+        await cycleFavorite(pi, ctx, "forward");
+        return;
       }
-    }
 
-    if (startIndex > 0 || endIndex < this.filteredModels.length) {
-      this.listContainer.addChild(
-        new Text(theme.fg("muted", `  (${this.selectedIndex + 1}/${this.filteredModels.length})`), 0, 0),
-      );
-    }
-
-    if (this.errorMessage) {
-      for (const line of this.errorMessage.split("\n")) {
-        this.listContainer.addChild(new Text(theme.fg("error", line), 0, 0));
+      if (action === "prev" || action === "previous") {
+        await cycleFavorite(pi, ctx, "backward");
+        return;
       }
-    } else if (this.filteredModels.length === 0) {
-      this.listContainer.addChild(new Text(theme.fg("muted", "  No matching models"), 0, 0));
-    } else {
-      const selected = this.filteredModels[this.selectedIndex];
-      this.listContainer.addChild(new Spacer(1));
-      this.listContainer.addChild(new Text(theme.fg("muted", `  Model Name: ${selected.model.name}`), 0, 0));
-      this.listContainer.addChild(
-        new Text(theme.fg("muted", "  Ctrl+Shift+F/Alt+F: toggle favorite (saved to settings.json)"), 0, 0),
-      );
-    }
-  };
-}
 
-export default async function (_pi: ExtensionAPI) {
-  await patchNativeModelSelector();
+      if (action === "select") {
+        const favorites = await validFavorites(ctx);
+        if (favorites.length === 0) return ctx.ui.notify("No favorite models with configured API keys", "warning");
+        const labels = favorites.map((f) => `${f.provider}/${f.modelId}:${f.thinkingLevel}`);
+        const selected = await ctx.ui.select("Select favorite model", labels);
+        if (!selected) return;
+        const favorite = favorites[labels.indexOf(selected)];
+        const ok = await pi.setModel(favorite.model);
+        if (!ok) return ctx.ui.notify(`No API key for ${favorite.provider}/${favorite.modelId}`, "warning");
+        pi.setThinkingLevel(favorite.thinkingLevel as ThinkingLevel);
+        setDefaultModel(favorite.provider, favorite.modelId);
+
+        return;
+      }
+
+      if (action === "list") {
+        const favorites = getMergedFavorites(ctx.cwd);
+        ctx.ui.notify(favorites.length ? `Favorite models:\n${favorites.map((f) => `• ${f}`).join("\n")}` : "No favorite models", "info");
+        return;
+      }
+
+      if (action === "add") {
+        const parsed = rawKey ? parseFavorite(rawKey) : current && parseFavorite(`${current.provider}/${current.id}:${pi.getThinkingLevel()}`);
+        if (!parsed) return ctx.ui.notify("Usage: /favorite-model add provider/model[:off|minimal|low|medium|high|xhigh]", "error");
+        if (!addFavorite(parsed.provider, parsed.modelId, parsed.thinkingLevel)) return ctx.ui.notify("Invalid thinking level", "error");
+        ctx.ui.notify(`Added favorite ${parsed.provider}/${parsed.modelId}:${parsed.thinkingLevel}`, "info");
+        return;
+      }
+
+      if (action === "remove") {
+        const parsed = rawKey ? parseFavorite(rawKey) : current && parseFavorite(`${current.provider}/${current.id}`);
+        if (!parsed) return ctx.ui.notify("Usage: /favorite-model remove provider/model", "error");
+        removeFavorite(parsed.provider, parsed.modelId);
+        ctx.ui.notify(`Removed favorite ${parsed.provider}/${parsed.modelId}`, "info");
+        return;
+      }
+
+      if (action === "toggle") {
+        if (!current) return ctx.ui.notify("No current model", "warning");
+        const existing = findGlobalFavorite(current.provider, current.id);
+        if (existing) {
+          removeFavorite(current.provider, current.id);
+          ctx.ui.notify(`Removed favorite ${current.provider}/${current.id}`, "info");
+        } else {
+          addFavorite(current.provider, current.id, pi.getThinkingLevel());
+          ctx.ui.notify(`Added favorite ${current.provider}/${current.id}:${pi.getThinkingLevel()}`, "info");
+        }
+        return;
+      }
+
+      ctx.ui.notify("Usage: /favorite-model next|prev|select|list|add|remove|toggle", "error");
+    },
+  });
 }

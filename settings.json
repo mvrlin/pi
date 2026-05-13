@@ -13,7 +13,7 @@
   "theme": "dark",
   "hideThinkingBlock": false,
   "favoriteModels": [
-    "openai-codex/gpt-5.5",
-    "openrouter/minimax/minimax-m2.7"
+    "openai-codex/gpt-5.5:minimal",
+    "openrouter/minimax/minimax-m2.7:medium"
   ]
 }
