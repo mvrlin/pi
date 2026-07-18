@@ -3,7 +3,7 @@
   "defaultProvider": "openai-codex",
   "defaultThinkingLevel": "high",
   "enableInstallTelemetry": false,
-  "lastChangelogVersion": "0.80.3",
+  "lastChangelogVersion": "0.80.10",
   "quietStartup": true,
   "packages": [
     "npm:@latentminds/pi-quotas",
