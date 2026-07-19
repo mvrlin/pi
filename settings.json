@@ -1,23 +1,11 @@
 {
-  "defaultModel": "gpt-5.5",
-  "defaultProvider": "openai-codex",
-  "defaultThinkingLevel": "high",
-  "enableInstallTelemetry": false,
   "lastChangelogVersion": "0.80.10",
-  "quietStartup": true,
-  "packages": [
-    "npm:@latentminds/pi-quotas",
-    "npm:pi-bash-live-view",
-    "npm:pi-web-access",
-    "npm:pi-paster"
-  ],
   "theme": "dark",
-  "hideThinkingBlock": false,
-  "favoriteModels": [
-    "openai-codex/gpt-5.5:high",
-    "openrouter/minimax/minimax-m2.7:high"
-  ],
-  "retry": {
-    "enabled": true
-  }
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.6-sol",
+  "defaultThinkingLevel": "high",
+  "collapseChangelog": true,
+  "quietStartup": true,
+  "enableInstallTelemetry": false,
+  "defaultProjectTrust": "ask"
 }
